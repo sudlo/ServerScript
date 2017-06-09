@@ -1,0 +1,619 @@
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'	Written/Maintined by EPS/Intel - C. Ross - 12/03
+
+'	Script will return either HomeDir Deletion Success or Failure
+
+'	Script requires copy of RMTSHARE.EXE (NT4 Resource Kit) in \system32\
+
+'	Modified:
+'			Added function to delete user's .DAT file (if it exists) 9/28/04
+'			Corrected minor bug in calculating folder size 9/28/04
+'			Added function to collect user acct detail 9/29/04
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'	Convert CLI arguments to vbasic speak
+
+	Set objArgs = WScript.Arguments
+	UserID = lcase(objArgs(0))
+	UserIATA = ucase(objArgs(1))
+	MgrID =  ucase(objArgs(2))
+	MgrIATA =  ucase(objArgs(3))
+	
+	If objArgs.Count < 4 Then
+		WScript.echo "Usage:  "
+		WScript.echo "    cscript ArchiveHomeDir userid UserIATA MgrID MgrIATA //nologo"
+	End If
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'	Set argument variables:
+
+'>>>>>> Choose DOMAIN-environment for script below, by changing remark
+
+'          Domain = "clorox-test"	'
+          Domain = "clorox"
+'          Domain = "a51q"	' "If statement" below needs to be updated if cold-standby gateway IP address used
+'          Domain = "a51d"
+
+'	''''''''''''''''''''''
+	If Domain = "clorox" Then
+		DomainFQ = "dc=NA,dc=corp,dc=clorox,dc=com"        
+		DomainNB = "clorox\"
+		LogPath = "\\jbs801\docsys\uaa\nt\LightHouseLogs\"
+		BestServer = "\\" & UserIATA & "001"
+		intBestServer = "\\" & MgrIATA & "001"
+		BestVolume = "\d$\data\homedirs\"
+		intBestVolume = "\d$\data\homedirs\"
+		PhysPath = "d:\data\homedirs\"
+		intPhysPath = "d:\data\homedirs\"
+		TrigFileLoc = "\\jbs016\d$\gateway\adScripts\trigloc\" ' this is the "hot spare" gateway
+		DatPath = "\\jbs001na\netlogon\users\"
+	ElseIf Domain = "clorox-test" Then
+		DomainFQ = "dc=NA,dc=corp,dc=clorox,dc=com"        
+		DomainNB = "clorox\"
+		LogPath = "\\jbs243\d$\gateway\adscripts\logs\"
+		BestServer = "\\jbs243"
+		intBestServer = "\\jbs243"
+		BestVolume = "\d$\data\homedirs\"
+		intBestVolume = "\d$\data\homedirs\"
+		PhysPath = "d:\data\homedirs\"
+		intPhysPath = "d:\data\homedirs\"
+		TrigFileLoc = "\\jbs243\d$\gateway\adScripts\trigloc\"
+		DatPath = "\\jbs001na\netlogon\users\"
+	ElseIf Domain = "a51q" Then
+		DomainFQ = "dc=a51q,dc=clorox,dc=com"        
+		DomainNB = "a51q\"
+		LogPath = "\\10.51.2.23\d$\gateway\adscripts\logs\"
+		BestServer = "\\jbs315"
+		intBestServer = "\\jbs315"
+		BestVolume = "\d$\data\homedirs\"
+		intBestVolume = "\d$\data\homedirs\"
+		PhysPath = "d:\data\homedirs\"
+		intPhysPath = "d:\data\homedirs\"
+		TrigFileLoc = "\\10.51.2.25\d$\gateway\adScripts\trigloc\"
+		DatPath = " "
+	ElseIf Domain = "a51d" Then
+		DomainFQ = "dc=a51d,dc=clorox,dc=com"        
+		DomainNB = "a51d\"
+		LogPath = "\\10.51.3.12\d$\gateway\adscripts\logs\"
+		BestServer = "\\jbs316"
+		intBestServer = "\\jbs316"
+		BestVolume = "\d$\data\homedirs\"
+		intBestVolume = "\d$\data\homedirs\"
+		PhysPath = "d:\data\homedirs\"
+		intPhysPath = "d:\data\homedirs\"
+		TrigFileLoc = "\\10.51.3.12\d$\gateway\adScripts\trigloc\"
+		DatPath = " "
+	Else
+		WScript.echo "Error: Domain name not recognized"
+	End if
+	
+	VerFile = "\Move_" & ucase(UserID) & "_to_" & ucase(NewIATA) & ".ver"
+	LogName = "ArchiveHomeDir_" & ucase(UserID) & "_" & ucase(UserIATA) & "_to_" & ucase(MgrID) & "_" & ucase(MgrIATA) & ".log"
+	RemoteShare = "d:\gateway\adscripts\util\rmtshare.exe "
+	JobTrigFile = "ArchiveHD_" & UCase(UserID)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'	Create Log File:
+
+	Const adVarChar = 200
+	Const MaxCharacters = 255
+	Const adInteger = 3
+	Const adVarNumeric = 139
+	Const GroupDigits = True
+	Const Default = False
+	Const NoDecimals = 0
+	Const Decimals = 1
+	Const ForReading = 1
+	Const ForAppending = 8 
+	Set objFSO = CreateObject("Scripting.FileSystemObject")
+	Set objFileLog = objFSO.CreateTextFile(LogPath & LogName, ForAppending)
+	objFileLog.WriteBlankLines (1)
+	objFileLog.WriteLine Now 	'adds timestamp to start of log
+	objFileLog.WriteBlankLines (1)
+	objFileLog.WriteLine "Collect command line arguments:"
+	objFileLog.WriteLine "    - From Lighthouse: User's Account = " & ucase(UserID)
+	objFileLog.WriteLine "    - From Lighthouse: User's IATA = " & ucase(UserIATA)
+	objFileLog.WriteLine "    - From Lighthouse: Mgr's Account = " & ucase(MgrID)
+	objFileLog.WriteLine "    - From Lighthouse: Mgr's IATA = " & ucase(MgrIATA)
+	
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'	Argument syntax:
+
+	If objArgs.Count < 4 Then
+		objFileLog.WriteLine "Usage:  "
+		objFileLog.WriteLine "    cscript ArchiveHomeDir userid UserIATA MgrID MgrIATA //nologo"
+		objFileLog.WriteBlankLines (1)
+		objFileLog.WriteLine "!!!   From Lighthouse: Required command line arguments missing!"
+		objFileLog.WriteBlankLines (1)
+		objFileLog.WriteLine "*** - Fatal Error - End Script -"
+		Wscript.StdOut.WriteLine "Error:"
+		objFileLog.Close
+		wscript.quit
+	End If
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'	Find exiting UserID's share
+
+'	''''''''''''''
+'	"IF" UserIATA = JBS
+	if ucase(UserIATA) = "JBS" then 
+		OldBestServer = BestServer
+		OldBestVolume = BestVolume
+		OldPhysPath = PhysPath
+		'	'''''''''''''''''''''''''''''''''''''''''''''
+		'	Confirm SOURCE HomeDir share on either JBS801 or JBS802
+		
+		objFileLog.WriteBlankLines (1)
+		objFileLog.WriteLine "Search for source share name " & ucase(UserID) & "$" & " on " & ucase(UserIATA)
+		
+		JBS_Servers = Array("\\JBS801","\\JBS802") 
+		For Each Server in JBS_servers
+			Set objShell = WScript.CreateObject("WScript.Shell")
+			CMDLine = server & "\" & Ucase(UserID) & "$"
+			Set objExecObject = objShell.Exec("%comspec% /c " & RemoteShare & CMDLine)
+			strOutput = objExecObject.stdout.Read(10)
+			If strOutput = "Share name" Then
+				BestServer = server
+				objFileLog.WriteLine "    - Continue: found source share " & ucase(UserID) & "$" & " on server: " & BestServer
+			End if
+			wscript.sleep 100
+		Next
+		
+'	'''''''''''''''
+'	Success or Fail
+
+		Set objShell = WScript.CreateObject("WScript.Shell")
+		CMDLine = BestServer & "\" & Ucase(UserID) & "$"
+		Set objExecObject = objShell.Exec("%comspec% /c " & RemoteShare & CMDLine)
+		strOutput = objExecObject.stdout.Read(10)
+		If not strOutput = "Share name" Then
+			objFileLog.WriteLine ">>> - Error: source share not found: JBS801 or JBS802"
+			objFileLog.WriteBlankLines (1)
+			objFileLog.WriteLine "*** - Fatal Error - End Script -"
+			Wscript.StdOut.WriteLine "Error:"
+			wscript.quit
+		End if
+		
+		wscript.sleep 100
+
+'	'''''''''''''''''''''''''''''''''''''''''''''
+'	Get JBS share UNC and physical path
+
+		Set objShell = WScript.CreateObject("WScript.Shell")
+		CMDLine = BestServer & "\" & Ucase(UserID) & "$"
+		Set objExecObject = objShell.Exec("%comspec% /c " & RemoteShare & CMDLine)
+		objFileLog.WriteBlankLines (1)
+		objFileLog.WriteLine "Checking volume assignment: "
+		Do Until objExecObject.StdOut.AtEndOfStream
+			strLine = objExecObject.StdOut.ReadLine()
+			strPath = Instr(strLine,"Path")
+			If strPath <> 0 Then
+				strTrunk = strLine
+			End If
+		Loop
+		
+		strLinetoParse = strTrunk
+		FullPathLine = Mid(strLinetoParse, 1, 64)
+		VolID = Mid(strLinetoParse, 26, 4)
+		PhysicalPath = Mid(strLinetoParse, 28)
+		objFileLog.WriteLine  "    - Volume identified: " & VolID
+		
+		If lcase(VolID) = "d001" Then
+			BestVolume = "\001_Home$\HomeDirs\"
+		ElseIf lcase(VolID) = "d002" Then
+			BestVolume = "\002_Home$\HomeDirs\"
+		ElseIf lcase(VolID) = "d003" Then
+			BestVolume = "\003_Home$\HomeDirs\"
+		ElseIf lcase(VolID) = "d004" Then
+			BestVolume = "\004_Home$\HomeDirs\"
+		ElseIf lcase(VolID) = "d005" Then
+			BestVolume = "\005_Home$\HomeDirs\"
+		Else
+			objFileLog.WriteLine "No VolID found"
+		End If
+		
+		PhysPath = "c:\vol\" & VolID & "\qt01\homedirs\"
+		objFileLog.WriteBlankLines (1)
+		
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'	If UserIATA not = JBS
+	else
+'	'''''''''''''''''''''''''''''''''''''''''''''
+'	Confirm SOURCE HomeDir share on non-JBS servers
+		Set objShell = WScript.CreateObject("WScript.Shell")
+		CMDLine = BestServer & "\" & Ucase(UserID) & "$"
+		Set objExecObject = objShell.Exec("%comspec% /c " & RemoteShare & CMDLine)
+		
+		objFileLog.WriteBlankLines (1)
+		objFileLog.WriteLine "Search for source share name: " & ucase(UserID) & "$"
+		strOutput = objExecObject.stdout.Read(10)
+		If strOutput = "Share name" Then
+			objFileLog.WriteLine "    - Continue: found source share " & ucase(UserID) & "$" & " on server: " & BestServer
+			objFileLog.WriteBlankLines (1)
+		Else
+			objFileLog.WriteLine ">>> - Error: source share not found on: " & BestServer
+			objFileLog.WriteBlankLines (1)
+			objFileLog.WriteLine "*** - Fatal Error - End Script -"
+			Wscript.StdOut.WriteLine "Error:"
+			wscript.quit
+		End if
+	end if
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'    For either JBS or non-JBS Source shares
+'	'''''''''''''''''''''''''''''''''''''''''''''
+'	Document Source Folder...
+	
+	objFileLog.WriteLine "Documenting source folder:"
+	Set objFSO = CreateObject("Scripting.FileSystemObject")
+	Set objFolder = objFSO.GetFolder(BestServer & BestVolume & UserID)
+	objFileLog.WriteLine "    - Folder Name: " & objFolder.Name
+	objFileLog.WriteLine "    - Date created: " & objFolder.DateCreated
+	objFileLog.WriteLine "    - Date last accessed: " & objFolder.DateLastAccessed
+	objFileLog.WriteLine "    - Date last modified: " & objFolder.DateLastModified
+	objFileLog.WriteLine "    - Path: " & objFolder.Path
+	If objFolder.Size > 999999999 Then
+		LoadResult = FormatNumber((((objFolder.Size / 1024) / 1024) / 1024) , Decimals, GroupDigits) & " Gigabytes"
+		objFileLog.WriteLine "    - Folder Size: " & LoadResult
+	Elseif objFolder.Size > 999999 Then 
+		LoadResult = FormatNumber(((objFolder.Size / 1024) / 1024), Decimals, GroupDigits) & " Megabytes"
+		objFileLog.WriteLine "    - Folder Size: " & LoadResult
+	Else
+		LoadResult = FormatNumber((objFolder.Size / 1024), Decimals, GroupDigits) & " Kilobytes"
+		objFileLog.WriteLine "    - Folder Size: " & LoadResult
+	End if
+	objFileLog.WriteBlankLines (1)
+	'       objFileLog.WriteLine "    - Type: " & objFolder.Type
+	
+	load = objFolder.Size
+	
+'   ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'	Document User's AD account - DISABLED: LIGHTHOUSE DELETES ACCT BEFORE THIS CAN RUN
+
+'     strName = UserID
+' 	objFileLog.WriteBlankLines (1)
+' 	objFileLog.WriteLine "***********************************************"
+' 	objFileLog.WriteLine "Documenting Account Info for: " & strName
+' 
+' 	On Error Resume Next ' leave in - allows values to be blank
+' 	Set objRootDSE = GetObject("LDAP://rootDSE")
+' 	Set objUser = GetObject("LDAP://cn=" & strName & "," & "cn=Users" & "," & objRootDSE.Get("defaultNamingContext"))
+' 
+'     strSAMAccountName = objUser.Get("sAMAccountName")
+'     If Instr(ucase(strSAMAccountName), ucase(UserID)) > 0 Then
+' 		strCN = objUser.Get("cn")
+' 		strcomment = objUser.Get("comment")
+' 		strdescription = objUser.Get("description")
+' 		strdisplayName = objUser.Get("displayName")
+' 		strwhenCreated = objUser.Get("whenCreated")
+' 		strwhenChanged = objUser.Get("whenChanged")
+' 		strdistinguishedName = objUser.Get("distinguishedName")
+' 		stremployeeNumber = objUser.Get("employeeNumber")
+' 		strgivenName = objUser.Get("givenName")
+' 		strhomeDirectory = objUser.Get("homeDirectory")
+' 		strhomeDrive = objUser.Get("homeDrive")
+' 		strinitials = objUser.Get("initials")
+' 		strmail = objUser.Get("mail")
+' 		strname = objUser.Get("name")
+' 		strroomNumber = objUser.Get("roomNumber")
+' 		strSAMAccountName = objUser.Get("sAMAccountName")
+' 		strscriptPath = objUser.Get("scriptPath")
+' 		strsn = objUser.Get("sn")
+' 		strtelephoneNumber = objUser.Get("telephoneNumber")
+' 		strtitle = objUser.Get("title")
+' 		strobjectGUID = objUser.Get("objectGUID")
+' 		strUPN = objUser.Get("userPrincipalName")
+' 		strprimaryGroupID = objUser.Get("primaryGroupID")
+' 		
+' 		objUser.GetInfoEx Array("canonicalName"), 0
+' 		strcanonicalName = objUser.GetEx("canonicalName")
+' 		For Each Item in strcanonicalName
+' 			objFileLog.WriteLine "    - canonicalName: " & Item
+' 		Next
+' 	
+' 		objFileLog.WriteLine "    - cn: " & strCN
+' 		objFileLog.WriteLine "    - comment: " & strcomment
+' 		objFileLog.WriteLine "    - description: " & strdescription
+' 		objFileLog.WriteLine "    - displayName: " & strdisplayName
+' 		objFileLog.WriteLine "    - whenCreated: " & strwhenCreated
+' 		objFileLog.WriteLine "    - whenChanged: " & strwhenChanged
+' 		objFileLog.WriteLine "    - distinguishedName: " & strdistinguishedName
+' 		objFileLog.WriteLine "    - employeeNumber: " & stremployeeNumber
+' 		objFileLog.WriteLine "    - givenName: " & strgivenName
+' 		objFileLog.WriteLine "    - homeDirectory: " & strhomeDirectory
+' 		objFileLog.WriteLine "    - homeDrive: " & strhomeDrive
+' 		objFileLog.WriteLine "    - Initials: " & strinitials
+' 		objFileLog.WriteLine "    - mail: " & strmail
+' 		objFileLog.WriteLine "    - name: " & strname
+' 		objFileLog.WriteLine "    - roomNumber: " & strroomNumber
+' 		objFileLog.WriteLine "    - SAMAccountName: " & strSAMAccountName
+' 		objFileLog.WriteLine "    - scriptPath: " & strscriptPath
+' 		objFileLog.WriteLine "    - sn: " & strsn
+' 		objFileLog.WriteLine "    - telephoneNumber: " & strtelephoneNumber
+' 		objFileLog.WriteLine "    - title: " & strtitle
+' 		objFileLog.WriteLine "    - objectGUID: " & strobjectGUID
+' 		objFileLog.WriteLine "    - userPrincipalName: " & strUPN
+' 
+' 		If strprimaryGroupID = "513" then
+' 			objFileLog.WriteLine "    - PrimaryGroup: Domain Users"
+' 		Else
+' 			objFileLog.WriteLine "    * Error - check user's PrimaryGroup (should be set to Domain Users)" & vbtab & strprimaryGroupID
+' 		End If 		 
+' 
+' 		arrMemberOf = objUser.GetEx("memberOf")
+' 			If Err = -2147463155 Then
+' 		    	objFileLog.WriteLine "    - Member of: " & VbCrLf & vbTab & vbTab & "* The memberOf attribute is not set"
+' 			Else
+' 			   	objFileLog.WriteLine "    - Member of: "
+' 				Set datalist = CreateObject("ADOR.Recordset")
+' 				datalist.Fields.Append "Groups", adVarChar, MaxCharacters
+' 				datalist.Open
+' 			   	For each Group in arrMemberOf
+' 				  			DataList.AddNew
+' 				  			DataList("Groups") = lcase(Group)
+' 				  			DataList.Update
+' 				Next
+' 						DataList.Sort = "Groups"
+' 						DataList.MoveFirst
+' 				Do Until DataList.EOF
+' 					MemberOf = lcase(DataList.Fields.Item("Groups"))
+' 			       	strDat = Split(MemberOf, "cn=")
+' 			       	strLen = Len(strDat(1))
+' 			       	objFileLog.WriteLine "          " & left(strDat(1),(strLen-1))
+' 					DataList.MoveNext ' always the last line before Loop
+' 				Loop
+' 			End If
+' 			objFileLog.WriteBlankLines (1)
+' 	Else
+' 		objFileLog.WriteLine "Account " & strName & " not found"
+' 	End If
+' 
+' 	On Error GoTo 0
+' 
+' 	objFileLog.WriteLine "***********************************************"
+'	''''''''''''''
+'	Check for .DAT file on DC
+	If Datpath <> " " Then 
+		Set objFSO = CreateObject("Scripting.FileSystemObject")
+		objFileLog.WriteLine "Checking for existence of .DAT file for " & UserID & " at " & DatPath
+		If objFSO.FileExists(DatPath & UserID & ".dat") Then
+			objFileLog.WriteLine "    - Found: " & DatPath & UserID & ".dat"
+			objFSO.DeleteFile(DatPath & UserID & ".dat")
+			If Err = 0 Then
+				objFileLog.WriteLine "    - Deleted successfully"
+			Else
+				objFileLog.WriteLine "    - Error reported: " & Err.Number & vbTab & Err.Description
+				objFileLog.WriteLine "    - File not deleted - must delete manually"
+			End if
+		Else
+		objFileLog.WriteLine "    - .DAT file not found"
+		End If
+	Else
+	End If 
+	
+'	''''''''''''''
+
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'    For either JBS or non-JBS Source shares
+	
+	SrcBestServer = BestServer
+	SrcBestVolume = BestVolume
+	SrcPhysPath = PhysPath
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Source section ends here
+
+' Target section begins here
+'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'   Gather requirments for TARGET
+'	Create new folder and share on TARGET server
+	
+	BestServer = intBestServer
+	BestVolume = intBestVolume
+	PhysPath = intPhysPath
+	
+'	"IF" MgrIATA = JBS
+
+	if ucase(MgrIATA) = "JBS" then
+'	'''''''''''''''''''''''''''''''''''''''''''''
+'		Confirm Manager's HomeDir share on either JBS801 or JBS802
+		objFileLog.WriteLine "Search for Manager's share name " & ucase(MgrID) & "$" & " on " & ucase(MgrIATA)
+		JBS_Servers = Array("\\JBS801","\\JBS802") 
+		For Each Server in JBS_servers
+		Set objShell = WScript.CreateObject("WScript.Shell")
+		CMDLine = server & "\" & Ucase(MgrID) & "$"
+		Set objExecObject = objShell.Exec("%comspec% /c " & RemoteShare & CMDLine)
+		strOutput = objExecObject.stdout.Read(10)
+		If strOutput = "Share name" Then
+			BestServer = server
+			objFileLog.WriteLine "    - Continue: found Manager's HomeDir share " & ucase(MgrID) & "$" & " on server: " & BestServer
+			objFileLog.WriteBlankLines (1)
+		End if
+		
+		wscript.sleep 100
+		Next
+
+'	'''''''''''''''
+'	Success or Fail
+		
+		Set objShell = WScript.CreateObject("WScript.Shell")
+		CMDLine = BestServer & "\" & Ucase(MgrID) & "$"
+		Set objExecObject = objShell.Exec("%comspec% /c " & RemoteShare & CMDLine)
+		strOutput = objExecObject.stdout.Read(10)
+		If not strOutput = "Share name" Then
+			objFileLog.WriteLine ">>> - Error: Manager's HomeDir share not found: JBS801 or JBS802"
+			objFileLog.WriteBlankLines (1)
+			objFileLog.WriteLine "*** - Fatal Error - End Script -"
+			Wscript.StdOut.WriteLine "Error:"
+			wscript.quit
+		End if
+		
+		wscript.sleep 100
+		
+		'''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+		'	If MgrIATA not = JBS
+	else
+'	'''''''''''''''''''''''''''''''''''''''''''''
+'	Confirm Manager's HomeDir share on non-JBS servers
+		
+		Set objShell = WScript.CreateObject("WScript.Shell")
+		CMDLine = BestServer & "\" & Ucase(MgrID) & "$"
+		Set objExecObject = objShell.Exec("%comspec% /c " & RemoteShare & CMDLine)
+		
+		objFileLog.WriteBlankLines (1)
+		objFileLog.WriteLine "Search for Manager's HomeDir share name: " & ucase(MgrID) & "$"
+		strOutput = objExecObject.stdout.Read(10)
+		If strOutput = "Share name" Then
+			objFileLog.WriteLine "    - Continue: found Manager's HomeDir share " & ucase(MgrID) & "$" & " on server: " & BestServer
+			objFileLog.WriteBlankLines (1)
+		Else
+			objFileLog.WriteLine ">>> - Error: Manager's HomeDir share not found on: " & BestServer
+			objFileLog.WriteBlankLines (1)
+			objFileLog.WriteLine "*** - Fatal Error - End Script -"
+			Wscript.StdOut.WriteLine "Error:"
+			wscript.quit
+		End If
+	end if
+
+'	'''''''''''''''
+'	Check available non-JBS target space:
+	Set objFSO = CreateObject("Scripting.FileSystemObject")
+	Set objDrive = objFSO.GetDrive(BestServer & "\" & MgrID & "$")
+	VolumeSpace = objDrive.AvailableSpace
+'	'''''''''''''''
+'   Measure Bucket - Pass or Fail
+	objFileLog.WriteLine "Compare source and target size..."
+	Bucket = VolumeSpace
+	If Bucket > 999999999 Then 
+		BucketResult = FormatNumber((((Bucket / 1024) / 1024) / 1024), Decimals, GroupDigits) & " Gigabytes"
+	Elseif Bucket > 999999 Then 
+		BucketResult = FormatNumber(((Bucket / 1024) / 1024), Decimals, GroupDigits) & " Megabytes"
+	Else
+		BucketResult = FormatNumber((Bucket / 1024), Decimals, GroupDigits) & " Kilobytes"
+	End If 
+	
+	objFileLog.WriteLine "        * Size of source data = " & LoadResult
+	objFileLog.WriteLine "        * Available space on target = " & BucketResult
+	
+	If Bucket <= Load Then
+		objFileLog.WriteBlankLines (1)
+		objFileLog.WriteLine ">>> - Fatal Error - source larger than target -"
+		objFileLog.WriteLine "    - End Script - "
+		Wscript.StdOut.WriteLine "Error:"
+		objFileLog.WriteBlankLines (1)
+		objFileLog.WriteLine now
+		objFileLog.Close
+		wscript.quit
+	Else         
+		objFileLog.WriteLine "    - Continue - adaquate target space confirmed"
+		objFileLog.WriteBlankLines (1)
+	End if
+'	''''''''''''''''
+'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+'   ''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'	Create temp Job-Trigger File on Spare Gateway:
+
+	objFileLog.WriteLine "Preparing to create Job-Trigger file to external server..."
+	objFileLog.WriteLine "    - Creating temp Trigger File: " & TrigFileLoc & JobTrigFile & ".tmp"
+	Set objTrig = CreateObject("Scripting.FileSystemObject")
+	Set objTrigFile = objTrig.CreateTextFile(TrigFileLoc & JobTrigFile & ".tmp", ForAppending)
+	
+	objTrigFile.WriteLine Ucase(UserID)
+	objTrigFile.WriteLine SrcBestServer & "\" & Ucase(UserID) & "$"
+	objTrigFile.WriteLine BestServer & "\" & Ucase(MgrID) & "$"
+	objTrigFile.WriteLine SrcBestServer & SrcBestVolume & ucase(UserID)
+	objTrigFile.WriteLine LogName
+	objTrigFile.WriteLine LogPath
+	objTrigFile.Close
+	
+	'   Read from temp Job-Trigger File
+
+	objFileLog.WriteLine "    - Confirming temp Trigger File's contents..."
+	Set objTrig = CreateObject("Scripting.FileSystemObject")
+	Set objTrigFile = objTrig.OpenTextFile(TrigFileLoc & JobTrigFile & ".tmp", ForReading)
+	Do Until objTrigFile.AtEndOfStream
+		strText0 = objTrigFile.ReadLine
+		strText1 = objTrigFile.ReadLine
+		strText2 = objTrigFile.ReadLine
+		strText3 = objTrigFile.ReadLine
+		strText4 = objTrigFile.ReadLine
+		strText5 = objTrigFile.ReadLine
+		objFileLog.WriteLine "        - User's ID = " & strText0
+		objFileLog.WriteLine "        - Source UNC = " & strText1
+		objFileLog.WriteLine "        - Dest UNC = " & strText2
+		objFileLog.WriteLine "        - Source Path = " & strText3
+		objFileLog.WriteLine "        - LogName = " & strText4
+		objFileLog.WriteLine "        - LogPath = " & strText5
+		If strText0 = ucase(UserID) and strText1 = SrcBestServer & "\" & Ucase(UserID) & "$" and strText2 =  BestServer & "\" & Ucase(MgrID) & "$" and strText3 = SrcBestServer & SrcBestVolume & ucase(UserID) and strText4 = LogName and strText5 = LogPath Then
+			objFileLog.WriteLine "    - Success: temp Trigger File's contents = Good"
+			objFileLog.WriteLine "    - Proceed with deleting source share name..."
+			objTrigFile.Close
+			
+			'	'''''''''''''''''
+			'   Delete Source sharename
+			objFileLog.WriteBlankLines (1)
+			objFileLog.WriteLine "Deleting source share: " & strText1
+			Set objShell = WScript.CreateObject("WScript.Shell")
+			CMDLine = strText1 & " /d"
+			Set objExecObject = objShell.Exec("%comspec% /c " & RemoteShare & CMDLine)
+			Do until objExecObject.stdout.AtEndOfStream = True
+				strOutput = objExecObject.stdout.ReadAll
+				If Instr(strOutput, "The command completed successfully.") > 0 Then
+					objFileLog.WriteLine "    - Success - source sharename deleted:  "
+					objFileLog.WriteLine "    - Proceed with renaming Trigger File, which will move source data..."
+				Else
+					objFileLog.WriteLine ">>> - Error - Source sharename not deleted" & strText1
+					objFileLog.WriteBlankLines (1)
+					objFileLog.WriteLine "    - Command returned the following text:" &  strOutput
+					wscript.StdOut.WriteLine "Error:"
+					objFileLog.Close
+					wscript.quit
+				End If
+			Loop
+
+'   ''''''''''''''''''
+	'    Rename temp Trigger file extension from .tmp to .TRA (not temp any more)
+			objFileLog.WriteBlankLines (1)
+			objFileLog.WriteLine "Renaming trigger file extension from .tmp to .TRA"
+			Set objShell = WScript.CreateObject("WScript.Shell")
+			CMDLine = TrigFileLoc & JobTrigFile & ".tmp" & " " & "*.TRA"	' Don't forget to add the space!
+			Set objExecObject = objShell.Exec("%comspec% /c REN " & CMDLine)
+			WScript.sleep 100
+			Set objFSO = CreateObject("Scripting.FileSystemObject")
+			JobTrigFile = JobTrigFile & ".tra"
+			If objFSO.FileExists(TrigFileLoc & JobTrigFile) Then
+				Set objFolder = objFSO.GetFile(TrigFileLoc & JobTrigFile)
+				objFileLog.WriteLine "    - Success: Trigger File renamed to: " & JobTrigFile
+				objFileLog.WriteLine "    - Trigger file should begin executing now, maybe... "
+				objFileLog.WriteBlankLines (1)
+				objFileLog.WriteLine "Record in Log"
+				Wscript.StdOut.WriteLine "Success:"
+				objFileLog.WriteLine "    - Handing off to external data-archive script executing at: " & TrigFileLoc
+				objFileLog.WriteLine "    - Additional entries will be added to this log as the Move process completes..."
+				objFileLog.WriteBlankLines (1)
+				objFileLog.WriteLine Now
+				objFileLog.Close
+				WScript.Quit
+			Else
+				objFileLog.WriteLine ">>> - Error: Trigger File NOT renamed"
+				objFileLog.WriteBlankLines (1)
+				objFileLog.WriteLine "*** - Fatal Error - End Script -"
+				objFileLog.WriteLine strOutput
+				wscript.StdOut.WriteLine "Error:"
+				objFileLog.WriteLine Now
+				objFileLog.Close
+				wscript.quit
+			End if         
+			Exit Do
+		Else
+			objFileLog.WriteLine ">>> - Error: Trigger-File Verification Error for HomeDir Archive - From: " & ucase(strText1) & " to: " & UCase(strText2)
+			objFileLog.WriteBlankLines (1)
+			objFileLog.WriteLine "*** - Fatal error reported - exiting script -"
+			objFileLog.WriteBlankLines (1)
+			Wscript.StdOut.WriteLine "Error:"
+			objFileLog.WriteLine Now
+			objFileLog.Close
+			wscript.quit
+			
+			Exit Do
+		end if
+	Loop
